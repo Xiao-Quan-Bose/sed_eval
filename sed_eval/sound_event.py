@@ -1110,6 +1110,8 @@ class EventBasedMetrics(SoundEventMetrics):
                  event_label_list,
                  evaluate_onset=True,
                  evaluate_offset=True,
+                 event_merge_interval=None,
+                 target_event="self_speech",
                  t_collar=0.200,
                  percentage_of_length=0.5,
                  event_matching_type='optimal',
@@ -1177,6 +1179,8 @@ class EventBasedMetrics(SoundEventMetrics):
         self.evaluate_onset = evaluate_onset
         self.evaluate_offset = evaluate_offset
 
+        self.event_merge_interval = event_merge_interval
+        self.target_event = target_event
         self.t_collar = t_collar
         self.percentage_of_length = percentage_of_length
         self.event_matching_type = event_matching_type
@@ -1248,12 +1252,18 @@ class EventBasedMetrics(SoundEventMetrics):
 
         """
 
+        # filename = str(reference_event_list.filename).split("/")[-1]
+
         # Make sure input is dcase_util.containers.MetaDataContainer
         if not isinstance(reference_event_list, dcase_util.containers.MetaDataContainer):
             reference_event_list = dcase_util.containers.MetaDataContainer(reference_event_list)
 
         if not isinstance(estimated_event_list, dcase_util.containers.MetaDataContainer):
             estimated_event_list = dcase_util.containers.MetaDataContainer(estimated_event_list)
+
+        if self.event_merge_interval:
+            reference_event_list = reference_event_list.process_events(minimum_event_gap=self.event_merge_interval)
+            estimated_event_list = estimated_event_list.process_events(minimum_event_gap=self.event_merge_interval)
 
         # Check that input event list have event only from one file
         reference_files = reference_event_list.unique_files
@@ -1271,6 +1281,7 @@ class EventBasedMetrics(SoundEventMetrics):
         # Evaluate only valid events
         valid_reference_event_list = dcase_util.containers.MetaDataContainer()
         for item in reference_event_list:
+            # print(item)
             if 'event_onset' in item and 'event_offset' in item and 'event_label' in item:
                 valid_reference_event_list.append(item)
 
@@ -1339,6 +1350,19 @@ class EventBasedMetrics(SoundEventMetrics):
                 G[est_i].append(ref_i)
 
             matching = sorted(util.bipartite_match(G).items())
+
+            ref_idx_matched = [x[0] for x in matching]
+            est_idx_matched = [x[1] for x in matching]
+            error_message = ""
+            false_positive, false_negative = False, False
+            for i, re in enumerate(reference_event_list):
+                if re['event_label'] == self.target_event and i not in ref_idx_matched:
+                    error_message += (f"Missed {self.target_event} event     start time {re['onset']:.2f}    end time {re['offset']:.2f}\n")
+                    false_negative = True
+            for i, ee in enumerate(estimated_event_list):
+                if ee['event_label'] == self.target_event and i not in est_idx_matched:
+                    error_message += (f"Extra {self.target_event} event     start time {ee['onset']:.2f}    end time {ee['offset']:.2f}\n")
+                    false_positive = True
 
             ref_correct = numpy.zeros(Nref, dtype=bool)
             sys_correct = numpy.zeros(Nsys, dtype=bool)
@@ -1572,7 +1596,7 @@ class EventBasedMetrics(SoundEventMetrics):
             self.class_wise[class_label]['Nfp'] += Nfp
             self.class_wise[class_label]['Nfn'] += Nfn
 
-        return self
+        return self, error_message, false_positive, false_negative
 
     def reset(self):
         """Reset internal state
@@ -1624,10 +1648,17 @@ class EventBasedMetrics(SoundEventMetrics):
 
         # Detect field naming style used and validate onset
         if 'event_onset' in reference_event and 'event_onset' in estimated_event:
-            return math.fabs(reference_event['event_onset'] - estimated_event['event_onset']) <= t_collar
+            # return math.fabs(reference_event['event_onset'] - estimated_event['event_onset']) <= t_collar
+            delay = estimated_event['event_onset'] - reference_event['event_onset']
+            return  delay <= t_collar and delay >= -0.25
 
         elif 'onset' in reference_event and 'onset' in estimated_event:
-            return math.fabs(reference_event['onset'] - estimated_event['onset']) <= t_collar
+            # return math.fabs(reference_event['onset'] - estimated_event['onset']) <= t_collar
+            delay = estimated_event['onset'] - reference_event['onset']
+            correct = delay <= t_collar and delay >= -0.1
+            # if not correct:
+            #     print(delay)
+            return correct
 
     @staticmethod
     def validate_offset(reference_event, estimated_event, t_collar=0.200, percentage_of_length=0.5):
